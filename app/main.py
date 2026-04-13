@@ -129,6 +129,34 @@ async def execute_once():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/trading/settings")
+async def update_trading_settings(req: dict | None = None):
+    from app.services.trader import get_trader
+    try:
+        params = req or {}
+        trader = get_trader()
+        trader.update_settings(
+            leverage=params.get("leverage"),
+            trade_amount=params.get("trade_amount"),
+            take_profit_pct=params.get("take_profit_pct"),
+            stop_loss_pct=params.get("stop_loss_pct"),
+        )
+        # Re-apply leverage on Binance if changed
+        if "leverage" in params:
+            trader.setup_leverage()
+        return {
+            "message": "Settings updated",
+            "settings": {
+                "leverage": trader.leverage,
+                "trade_amount": trader.trade_amount,
+                "take_profit_pct": trader.take_profit_pct,
+                "stop_loss_pct": trader.stop_loss_pct,
+            },
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/trading/close-position")
 async def close_position():
     from app.services.trader import get_trader

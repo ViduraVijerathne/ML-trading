@@ -21,12 +21,31 @@ class FuturesTrader:
         self.symbol = SYMBOL
         self.leverage = LEVERAGE
         self.trade_amount = TRADE_AMOUNT
+        self.take_profit_pct = 0.01
+        self.stop_loss_pct = 0.005
         self.is_running = False
         self.trades: list[dict] = []
         self.current_position: Optional[dict] = None
         self.total_pnl = 0.0
         self.wins = 0
         self.losses = 0
+
+    def update_settings(
+        self,
+        leverage: Optional[int] = None,
+        trade_amount: Optional[float] = None,
+        take_profit_pct: Optional[float] = None,
+        stop_loss_pct: Optional[float] = None,
+    ):
+        """Update trading parameters."""
+        if leverage is not None:
+            self.leverage = leverage
+        if trade_amount is not None:
+            self.trade_amount = trade_amount
+        if take_profit_pct is not None:
+            self.take_profit_pct = take_profit_pct
+        if stop_loss_pct is not None:
+            self.stop_loss_pct = stop_loss_pct
 
     def setup_leverage(self):
         """Set leverage for the trading pair."""
@@ -172,6 +191,12 @@ class FuturesTrader:
             "current_position": self.current_position,
             "current_price": self.get_current_price(),
             "trade_history": self.trades[-20:],  # Last 20 trades
+            "settings": {
+                "leverage": self.leverage,
+                "trade_amount": self.trade_amount,
+                "take_profit_pct": self.take_profit_pct,
+                "stop_loss_pct": self.stop_loss_pct,
+            },
         }
 
 
