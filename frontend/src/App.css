@@ -1,0 +1,5 @@
+/* Reset styles for the trading dashboard */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #374151 transparent;
+}
