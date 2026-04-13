@@ -405,8 +405,10 @@ def simulate_session(
         if balance < current_bet:
             break
 
+        actual_bet = current_bet  # capture before modification
+
         if crash >= cashout_target:
-            profit = current_bet * (cashout_target - 1)
+            profit = actual_bet * (cashout_target - 1)
             balance += profit
             pnl += profit
             wins += 1
@@ -415,13 +417,13 @@ def simulate_session(
                 current_bet = bet_amount
             outcome = "WIN"
         else:
-            balance -= current_bet
-            pnl -= current_bet
+            balance -= actual_bet
+            pnl -= actual_bet
             losses += 1
             consecutive_losses += 1
             if martingale:
                 current_bet = min(current_bet * 2, bet_amount * 16)
-            profit = -current_bet if not martingale else -(current_bet / 2)
+            profit = -actual_bet
             outcome = "LOSS"
 
         bets += 1
@@ -429,7 +431,7 @@ def simulate_session(
             "round": i - seed_rounds + 1,
             "crash_point": crash,
             "outcome": outcome,
-            "bet_amount": round(current_bet if outcome == "LOSS" and martingale else bet_amount, 2),
+            "bet_amount": round(actual_bet, 2),
             "profit": round(profit, 2),
             "balance": round(balance, 2),
             "confidence": pred["confidence"],

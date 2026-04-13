@@ -104,10 +104,10 @@ def generate_synthetic_data(
             pattern_prob = 0.25  # strongly biased below 2x
         elif above_count >= 3:
             pattern_prob = 0.35
-        elif above_count <= 1:
-            pattern_prob = 0.65
         elif above_count == 0:
             pattern_prob = 0.75  # strongly biased above 2x
+        elif above_count <= 1:
+            pattern_prob = 0.65
 
         # Rule 2: Momentum after big crashes
         if last_crash >= 5.0:
