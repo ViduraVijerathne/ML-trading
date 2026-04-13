@@ -262,6 +262,9 @@ def process_round(crash_point: float, round_id: Optional[int] = None) -> dict:
             "balance_after": round(state.balance, 2),
         })
 
+        # Clear resolved prediction so it cannot be re-resolved
+        state.last_prediction = None
+
     # Check stop conditions
     if not state.is_running:
         result["next_prediction"] = {"should_bet": False, "reason": "Bot is stopped"}
