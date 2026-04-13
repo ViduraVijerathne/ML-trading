@@ -2,13 +2,15 @@ import { useState } from "react";
 import ModelSection from "./components/ModelSection";
 import BacktestSection from "./components/BacktestSection";
 import TradingSection from "./components/TradingSection";
+import AviatorSection from "./components/AviatorSection";
 
-type Tab = "model" | "backtest" | "trading";
+type Tab = "model" | "backtest" | "trading" | "aviator";
 
 function App() {
-  const [activeTab, setActiveTab] = useState<Tab>("model");
+  const [activeTab, setActiveTab] = useState<Tab>("aviator");
 
   const tabs: { key: Tab; label: string }[] = [
+    { key: "aviator", label: "Aviator Bot" },
     { key: "model", label: "ML Model" },
     { key: "backtest", label: "Backtesting" },
     { key: "trading", label: "Live Trading" },
@@ -66,6 +68,7 @@ function App() {
 
       {/* Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {activeTab === "aviator" && <AviatorSection />}
         {activeTab === "model" && <ModelSection />}
         {activeTab === "backtest" && <BacktestSection />}
         {activeTab === "trading" && <TradingSection />}
