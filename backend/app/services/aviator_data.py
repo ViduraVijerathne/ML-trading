@@ -217,7 +217,7 @@ def append_round(crash_point: float, round_id: Optional[int] = None) -> dict:
     """Record a single new round result."""
     history = load_history()
     new_round = {
-        "round_id": round_id or len(history) + 1,
+        "round_id": round_id if round_id is not None else len(history) + 1,
         "crash_point": crash_point,
         "timestamp": int(time.time()),
     }

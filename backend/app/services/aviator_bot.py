@@ -336,22 +336,19 @@ def simulate_session(
     """Run a full simulation of the bot on historical data.
 
     Trains the model on the first 75% of data, then simulates
-    betting on the remaining 25%.
+    betting on the remaining 25%.  The simulation runs entirely
+    in-memory to avoid destroying the shared round history on disk.
     """
     from app.services.aviator_model import train_aviator_model, build_features, FEATURE_COLS, predict_next_round
-    from app.services.aviator_data import clear_history, save_history
 
     # Train model
     train_result = train_aviator_model(df)
-
-    # Reset bot for simulation
-    clear_history()
 
     # Prepare data for simulation — use last 25%
     split_idx = int(len(df) * 0.75)
     sim_data = df.iloc[split_idx:].reset_index(drop=True)
 
-    # Seed history with first 60 rounds of sim data
+    # Seed history with first 60 rounds of sim data (in-memory only)
     seed_rounds = min(60, len(sim_data) - 1)
     history = []
     for i in range(seed_rounds):
@@ -361,9 +358,8 @@ def simulate_session(
             "crash_point": float(row["crash_point"]),
             "timestamp": int(row.get("timestamp", int(time.time()) - (len(sim_data) - i) * 15)),
         })
-    save_history(history)
 
-    # Simulate remaining rounds
+    # Simulate remaining rounds (all in-memory, no disk writes)
     balance = initial_balance
     bets = 0
     wins = 0
@@ -379,15 +375,14 @@ def simulate_session(
         row = sim_data.iloc[i]
         crash = float(row["crash_point"])
 
-        # Record round in history
+        # Record round in history (in-memory only)
         history.append({
             "round_id": int(row.get("round_id", i + 1)),
             "crash_point": crash,
             "timestamp": int(row.get("timestamp", int(time.time()) - (len(sim_data) - i) * 15)),
         })
-        save_history(history)
 
-        # Get prediction
+        # Get prediction using in-memory history
         hist_df = pd.DataFrame(history[:-1])  # exclude current round for prediction
         if len(hist_df) < 60:
             skipped += 1
