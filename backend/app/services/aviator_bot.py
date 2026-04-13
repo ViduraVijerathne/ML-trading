@@ -300,6 +300,14 @@ def process_round(crash_point: float, round_id: Optional[int] = None) -> dict:
         result["next_prediction"] = {
             "should_bet": False,
             "reason": f"Need more history ({len(history_df)}/60 rounds)",
+            "predicted_class": 0,
+            "prediction": "N/A",
+            "confidence": 0,
+            "confidence_threshold": 0,
+            "probability_above_2x": 0,
+            "probability_below_2x": 0,
+            "last_crash_point": 0,
+            "features": {},
         }
         state.last_prediction = result["next_prediction"]
         return result
@@ -308,7 +316,18 @@ def process_round(crash_point: float, round_id: Optional[int] = None) -> dict:
         prediction = predict_next_round(history_df)
     except Exception as e:
         state.total_skipped += 1
-        result["next_prediction"] = {"should_bet": False, "reason": f"Prediction error: {e}"}
+        result["next_prediction"] = {
+            "should_bet": False,
+            "reason": f"Prediction error: {e}",
+            "predicted_class": 0,
+            "prediction": "N/A",
+            "confidence": 0,
+            "confidence_threshold": 0,
+            "probability_above_2x": 0,
+            "probability_below_2x": 0,
+            "last_crash_point": 0,
+            "features": {},
+        }
         state.last_prediction = result["next_prediction"]
         return result
 
