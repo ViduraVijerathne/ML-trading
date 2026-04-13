@@ -172,12 +172,170 @@ def prepare_training_data(
     return df
 
 
-def train_model(df: pd.DataFrame) -> dict:
-    """Train the trade-filter model (lazy-imports scikit-learn)."""
-    from sklearn.ensemble import GradientBoostingClassifier
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.metrics import accuracy_score, classification_report
+def _find_best_split(X_col: np.ndarray, residuals: np.ndarray,
+                     min_samples_leaf: int) -> tuple:
+    """Find the best split for a single feature using cumulative sums."""
+    n = len(X_col)
+    sorted_idx = np.argsort(X_col)
+    sorted_vals = X_col[sorted_idx]
+    sorted_res = residuals[sorted_idx]
 
+    # Cumulative sums for O(n) variance reduction computation
+    cum_sum = np.cumsum(sorted_res)
+    cum_sq_sum = np.cumsum(sorted_res ** 2)
+    total_sum = cum_sum[-1]
+    total_sq_sum = cum_sq_sum[-1]
+
+    best_gain = -1.0
+    best_sp = -1
+
+    lo = min_samples_leaf
+    hi = n - min_samples_leaf
+
+    for sp in range(lo, hi):
+        if sorted_vals[sp] == sorted_vals[sp - 1]:
+            continue
+
+        left_sum = cum_sum[sp - 1]
+        left_sq = cum_sq_sum[sp - 1]
+        right_sum = total_sum - left_sum
+        right_sq = total_sq_sum - left_sq
+
+        # Variance reduction = total_var - left_var - right_var
+        # We only need the gain (larger is better)
+        gain = (left_sum ** 2) / sp + (right_sum ** 2) / (n - sp)
+
+        if gain > best_gain:
+            best_gain = gain
+            best_sp = sp
+
+    if best_sp < 0:
+        return -1.0, -1, sorted_idx
+
+    thresh = (sorted_vals[best_sp - 1] + sorted_vals[best_sp]) / 2.0
+    return best_gain, thresh, sorted_idx
+
+
+def _build_stump(X: np.ndarray, residuals: np.ndarray, max_depth: int = 3,
+                  min_samples_split: int = 15, min_samples_leaf: int = 8,
+                  rng: np.random.RandomState | None = None,
+                  subsample: float = 1.0) -> dict:
+    """Build a single regression tree using numpy only (optimized).
+
+    Returns a dict with tree structure arrays compatible with the lightweight
+    inference format.
+    """
+    n_samples, n_features = X.shape
+
+    # Subsample
+    if subsample < 1.0 and rng is not None:
+        mask = rng.rand(n_samples) < subsample
+        if mask.sum() < min_samples_split:
+            mask[:min_samples_split] = True
+        X_sub, r_sub = X[mask], residuals[mask]
+    else:
+        X_sub, r_sub = X, residuals
+
+    max_nodes = 2 ** (max_depth + 1) - 1
+    feature_arr = np.full(max_nodes, -2, dtype=int)
+    threshold_arr = np.zeros(max_nodes, dtype=float)
+    children_left_arr = np.full(max_nodes, -1, dtype=int)
+    children_right_arr = np.full(max_nodes, -1, dtype=int)
+    value_arr = np.zeros(max_nodes, dtype=float)
+
+    node_count = 1
+    stack = [(0, np.arange(len(X_sub)), 0)]
+
+    while stack:
+        nid, indices, depth = stack.pop()
+        n = len(indices)
+        value_arr[nid] = np.mean(r_sub[indices]) if n > 0 else 0.0
+
+        if depth >= max_depth or n < min_samples_split or n < 2 * min_samples_leaf:
+            feature_arr[nid] = -2
+            continue
+
+        best_gain = -1.0
+        best_feat = -1
+        best_thresh = 0.0
+        best_sorted_idx = None
+
+        for feat in range(n_features):
+            gain, thresh, sorted_idx = _find_best_split(
+                X_sub[indices, feat], r_sub[indices], min_samples_leaf
+            )
+            if gain > best_gain:
+                best_gain = gain
+                best_feat = feat
+                best_thresh = thresh
+                best_sorted_idx = sorted_idx
+
+        if best_feat < 0:
+            feature_arr[nid] = -2
+            continue
+
+        # Split using the threshold
+        left_mask = X_sub[indices, best_feat] <= best_thresh
+        best_left = indices[left_mask]
+        best_right = indices[~left_mask]
+
+        if len(best_left) < min_samples_leaf or len(best_right) < min_samples_leaf:
+            feature_arr[nid] = -2
+            continue
+
+        feature_arr[nid] = best_feat
+        threshold_arr[nid] = best_thresh
+
+        left_id = node_count
+        right_id = node_count + 1
+        node_count += 2
+
+        children_left_arr[nid] = left_id
+        children_right_arr[nid] = right_id
+
+        stack.append((left_id, best_left, depth + 1))
+        stack.append((right_id, best_right, depth + 1))
+
+    return {
+        "feature": feature_arr[:node_count].tolist(),
+        "threshold": threshold_arr[:node_count].tolist(),
+        "children_left": children_left_arr[:node_count].tolist(),
+        "children_right": children_right_arr[:node_count].tolist(),
+        "value": value_arr[:node_count].tolist(),
+    }
+
+
+def _batch_predict_tree(tree_data: dict, X: np.ndarray) -> np.ndarray:
+    """Predict all samples through a tree at once (vectorized)."""
+    n = X.shape[0]
+    nodes = np.zeros(n, dtype=int)
+    feature = tree_data["feature"]
+    threshold = tree_data["threshold"]
+    children_left = tree_data["children_left"]
+    children_right = tree_data["children_right"]
+    value = tree_data["value"]
+
+    for _ in range(len(feature)):  # max iterations = max nodes
+        leaf_mask = np.array([feature[nodes[i]] < 0 for i in range(n)])
+        if leaf_mask.all():
+            break
+        for i in range(n):
+            if feature[nodes[i]] >= 0:
+                feat_idx = feature[nodes[i]]
+                if X[i, feat_idx] <= threshold[nodes[i]]:
+                    nodes[i] = children_left[nodes[i]]
+                else:
+                    nodes[i] = children_right[nodes[i]]
+
+    return np.array([value[nodes[i]] for i in range(n)])
+
+
+def train_model(df: pd.DataFrame) -> dict:
+    """Train the trade-filter model using numpy-only gradient boosting.
+
+    No scikit-learn required — fits within 256MB memory.
+    Optimized for speed with cumulative-sum splits and batch prediction.
+    """
     os.makedirs(MODEL_DIR, exist_ok=True)
 
     df = prepare_training_data(df)
@@ -189,64 +347,106 @@ def train_model(df: pd.DataFrame) -> dict:
     X = df[_ALL_FEATURES].values
     y = df["label"].values.astype(int)
 
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
+    # StandardScaler equivalent
+    scaler_mean = X.mean(axis=0)
+    scaler_scale = X.std(axis=0)
+    scaler_scale[scaler_scale == 0] = 1.0
+    X_scaled = (X - scaler_mean) / scaler_scale
 
     split = int(len(X_scaled) * 0.75)
     X_train, X_test = X_scaled[:split], X_scaled[split:]
     y_train, y_test = y[:split], y[split:]
 
-    model = GradientBoostingClassifier(
-        n_estimators=200,
-        max_depth=3,
-        learning_rate=0.05,
-        subsample=0.8,
-        min_samples_split=15,
-        min_samples_leaf=8,
-        random_state=42,
-    )
-    model.fit(X_train, y_train)
+    # Gradient Boosting parameters — fewer trees with higher learning rate for speed
+    n_estimators = 100
+    learning_rate = 0.1
+    max_depth = 3
+    subsample = 0.8
+    min_samples_split = 10
+    min_samples_leaf = 5
 
-    train_pred = model.predict(X_train)
-    test_pred = model.predict(X_test)
-    train_acc = accuracy_score(y_train, train_pred)
-    test_acc = accuracy_score(y_test, test_pred)
+    rng = np.random.RandomState(42)
 
-    # Effective accuracy: only count trades where model confidence >= 60 %
-    probs = model.predict_proba(X_test)
-    high_conf_mask = np.max(probs, axis=1) >= 0.55
+    pos_rate = np.clip(y_train.mean(), 1e-6, 1 - 1e-6)
+    init_log_odds = float(np.log(pos_rate / (1 - pos_rate)))
+    F_train = np.full(len(X_train), init_log_odds)
+    F_test = np.full(len(X_test), init_log_odds)
+
+    trees = []
+    feat_importance = np.zeros(X_train.shape[1])
+
+    for _ in range(n_estimators):
+        p_train = 1.0 / (1.0 + np.exp(-F_train))
+        residuals = y_train - p_train
+
+        tree_data = _build_stump(
+            X_train, residuals,
+            max_depth=max_depth,
+            min_samples_split=min_samples_split,
+            min_samples_leaf=min_samples_leaf,
+            rng=rng,
+            subsample=subsample,
+        )
+        trees.append(tree_data)
+
+        # Batch prediction (faster than per-sample loop)
+        F_train += learning_rate * _batch_predict_tree(tree_data, X_train)
+        F_test += learning_rate * _batch_predict_tree(tree_data, X_test)
+
+        for feat_idx in tree_data["feature"]:
+            if feat_idx >= 0:
+                feat_importance[feat_idx] += 1
+
+    # Normalize feature importance
+    total_imp = feat_importance.sum()
+    if total_imp > 0:
+        feat_importance /= total_imp
+
+    # Compute accuracies
+    train_probs = 1.0 / (1.0 + np.exp(-F_train))
+    test_probs = 1.0 / (1.0 + np.exp(-F_test))
+
+    train_pred = (train_probs >= 0.5).astype(int)
+    test_pred = (test_probs >= 0.5).astype(int)
+
+    train_acc = (train_pred == y_train).mean()
+    test_acc = (test_pred == y_test).mean()
+
+    # High-confidence accuracy
+    test_probs_2d = np.column_stack([1 - test_probs, test_probs])
+    high_conf_mask = np.max(test_probs_2d, axis=1) >= 0.55
     if high_conf_mask.sum() > 0:
-        hc_preds = model.predict(X_test[high_conf_mask])
-        hc_acc = accuracy_score(y_test[high_conf_mask], hc_preds)
+        hc_preds = (test_probs[high_conf_mask] >= 0.5).astype(int)
+        hc_acc = (hc_preds == y_test[high_conf_mask]).mean()
     else:
         hc_acc = test_acc
 
-    report = classification_report(
-        y_test, test_pred, target_names=["LOSS", "WIN"], output_dict=True,
-    )
+    # Classification report equivalent
+    def _class_metrics(y_true: np.ndarray, y_pred: np.ndarray, label: int) -> dict:
+        tp = ((y_pred == label) & (y_true == label)).sum()
+        fp = ((y_pred == label) & (y_true != label)).sum()
+        fn = ((y_pred != label) & (y_true == label)).sum()
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+        support = int((y_true == label).sum())
+        return {"precision": round(precision, 4), "recall": round(recall, 4),
+                "f1-score": round(f1, 4), "support": support}
 
-    # ---- Export to lightweight JSON format (no sklearn needed at load) ----
-    trees = []
-    for stage in model.estimators_:
-        tree = stage[0].tree_
-        trees.append({
-            "feature": tree.feature.tolist(),
-            "threshold": tree.threshold.tolist(),
-            "children_left": tree.children_left.tolist(),
-            "children_right": tree.children_right.tolist(),
-            "value": tree.value[:, 0, 0].tolist(),
-        })
+    report = {
+        "LOSS": _class_metrics(y_test, test_pred, 0),
+        "WIN": _class_metrics(y_test, test_pred, 1),
+        "accuracy": round(float(test_acc), 4),
+    }
 
-    init_value = float(model.init_.class_prior_[1])
-    init_log_odds = float(np.log(init_value / (1 - init_value)))
-
+    # Save weights in same JSON format as before
     weights = {
-        "learning_rate": model.learning_rate,
+        "learning_rate": learning_rate,
         "init_log_odds": init_log_odds,
         "n_classes": 2,
         "trees": trees,
-        "scaler_mean": scaler.mean_.tolist(),
-        "scaler_scale": scaler.scale_.tolist(),
+        "scaler_mean": scaler_mean.tolist(),
+        "scaler_scale": scaler_scale.tolist(),
         "features": _ALL_FEATURES,
     }
 
@@ -257,7 +457,7 @@ def train_model(df: pd.DataFrame) -> dict:
     global _cached_weights
     _cached_weights = None
 
-    feat_imp = dict(zip(_ALL_FEATURES, model.feature_importances_.tolist()))
+    feat_imp = dict(zip(_ALL_FEATURES, feat_importance.tolist()))
 
     return {
         "train_accuracy": round(train_acc * 100, 2),
