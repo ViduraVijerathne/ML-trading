@@ -24,18 +24,8 @@ def _headers() -> dict:
     return {"X-MBX-APIKEY": BINANCE_API_KEY}
 
 
-def fetch_historical_klines(
-    symbol: str = SYMBOL,
-    interval: str = "15m",
-    limit: int = 1500,
-) -> pd.DataFrame:
-    """Fetch historical kline/candlestick data from Binance Futures testnet."""
-    url = f"{BINANCE_BASE_URL}/fapi/v1/klines"
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
-    resp = requests.get(url, params=params, headers=_headers(), timeout=30)
-    resp.raise_for_status()
-    klines = resp.json()
-
+def _parse_klines(klines: list) -> pd.DataFrame:
+    """Convert raw kline data to a DataFrame."""
     df = pd.DataFrame(
         klines,
         columns=[
@@ -44,15 +34,64 @@ def fetch_historical_klines(
             "taker_buy_quote", "ignore",
         ],
     )
-
     numeric_cols = ["open", "high", "low", "close", "volume", "quote_volume"]
     for col in numeric_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce")
-
     df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
     df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
-
     return df
+
+
+def fetch_historical_klines(
+    symbol: str = SYMBOL,
+    interval: str = "15m",
+    limit: int = 1500,
+) -> pd.DataFrame:
+    """Fetch historical kline/candlestick data from Binance Futures testnet.
+
+    Supports fetching more than 1500 candles by paginating backwards
+    through the API automatically.
+    """
+    url = f"{BINANCE_BASE_URL}/fapi/v1/klines"
+    max_per_request = 1500
+
+    if limit <= max_per_request:
+        params = {"symbol": symbol, "interval": interval, "limit": limit}
+        resp = requests.get(url, params=params, headers=_headers(), timeout=30)
+        resp.raise_for_status()
+        return _parse_klines(resp.json())
+
+    # Paginate backwards to collect more than 1500 candles
+    all_klines: list = []
+    remaining = limit
+    end_time: int | None = None  # None = latest
+
+    while remaining > 0:
+        batch_size = min(remaining, max_per_request)
+        params: dict = {"symbol": symbol, "interval": interval, "limit": batch_size}
+        if end_time is not None:
+            params["endTime"] = end_time
+
+        resp = requests.get(url, params=params, headers=_headers(), timeout=30)
+        resp.raise_for_status()
+        klines = resp.json()
+
+        if not klines:
+            break
+
+        all_klines = klines + all_klines  # prepend older candles
+        remaining -= len(klines)
+
+        if len(klines) < batch_size:
+            break  # no more data available
+
+        # Next batch ends just before the oldest candle we received
+        end_time = int(klines[0][0]) - 1
+
+        # Small delay to avoid rate limiting
+        time.sleep(0.2)
+
+    return _parse_klines(all_klines)
 
 
 def futures_account() -> dict:

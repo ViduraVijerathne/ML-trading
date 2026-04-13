@@ -70,6 +70,7 @@ async def run_backtest_endpoint(req: dict | None = None):
             leverage=params.get("leverage", 10),
             take_profit_pct=params.get("take_profit_pct", 0.01),
             stop_loss_pct=params.get("stop_loss_pct", 0.005),
+            fee_rate=params.get("fee_rate", 0.0004),
         )
         return result
     except Exception as e:
@@ -140,6 +141,7 @@ async def update_trading_settings(req: dict | None = None):
             trade_amount=params.get("trade_amount"),
             take_profit_pct=params.get("take_profit_pct"),
             stop_loss_pct=params.get("stop_loss_pct"),
+            commission_fee=params.get("commission_fee"),
         )
         # Re-apply leverage on Binance if changed
         if "leverage" in params:
@@ -151,6 +153,7 @@ async def update_trading_settings(req: dict | None = None):
                 "trade_amount": trader.trade_amount,
                 "take_profit_pct": trader.take_profit_pct,
                 "stop_loss_pct": trader.stop_loss_pct,
+                "commission_fee": trader.commission_fee,
             },
         }
     except Exception as e:
