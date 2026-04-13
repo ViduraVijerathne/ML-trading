@@ -360,8 +360,9 @@ def simulate_session(
     """
     from app.services.aviator_model import train_aviator_model, build_features, FEATURE_COLS, predict_next_round
 
-    # Train model
-    train_result = train_aviator_model(df)
+    # Train model without persisting to disk (avoid overwriting user's model)
+    train_result = train_aviator_model(df, persist=False)
+    sim_weights = train_result["weights"]
 
     # Prepare data for simulation — use last 25%
     split_idx = int(len(df) * 0.75)
@@ -408,7 +409,7 @@ def simulate_session(
             continue
 
         try:
-            pred = predict_next_round(hist_df)
+            pred = predict_next_round(hist_df, weights=sim_weights)
         except Exception:
             skipped += 1
             continue

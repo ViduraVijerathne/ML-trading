@@ -206,17 +206,22 @@ def load_aviator_model() -> Optional[dict]:
 # Training (requires scikit-learn — lazy imported)
 # ------------------------------------------------------------------
 
-def train_aviator_model(df: pd.DataFrame) -> dict:
+def train_aviator_model(df: pd.DataFrame, *, persist: bool = True) -> dict:
     """Train a GradientBoosting classifier on Aviator crash data.
 
     Parameters
     ----------
     df : DataFrame
         Must contain at least ``crash_point`` column, time-ordered.
+    persist : bool
+        If True (default), save weights to disk and reset the global cache.
+        Set to False for simulation runs that should not overwrite the
+        user's trained model.
 
     Returns
     -------
-    dict with accuracy metrics and model info.
+    dict with accuracy metrics, model info, and (when persist=False) the
+    in-memory weights under the ``weights`` key.
     """
     from sklearn.ensemble import GradientBoostingClassifier
     from sklearn.preprocessing import StandardScaler
@@ -236,12 +241,16 @@ def train_aviator_model(df: pd.DataFrame) -> dict:
     y = df["target"].values.astype(int)
 
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
 
     # Time-series split: train on first 75 %, test on last 25 %
-    split_idx = int(len(X_scaled) * 0.75)
-    X_train, X_test = X_scaled[:split_idx], X_scaled[split_idx:]
+    split_idx = int(len(X) * 0.75)
+    X_train_raw, X_test_raw = X[:split_idx], X[split_idx:]
     y_train, y_test = y[:split_idx], y[split_idx:]
+
+    # Fit scaler on training data only to avoid data leakage
+    X_train = scaler.fit_transform(X_train_raw)
+    X_test = scaler.transform(X_test_raw)
+    X_scaled = np.vstack([X_train, X_test])
 
     model = GradientBoostingClassifier(
         n_estimators=300,
@@ -283,17 +292,20 @@ def train_aviator_model(df: pd.DataFrame) -> dict:
         y_test, test_pred, target_names=["< 2x", ">= 2x"], output_dict=True,
     )
 
-    # --- Cross-validation ---
+    # --- Cross-validation (fit scaler per fold to avoid leakage) ---
     tscv = TimeSeriesSplit(n_splits=5)
     cv_scores = []
-    for train_idx, val_idx in tscv.split(X_scaled):
+    for train_idx, val_idx in tscv.split(X):
+        cv_scaler = StandardScaler()
+        X_cv_train = cv_scaler.fit_transform(X[train_idx])
+        X_cv_val = cv_scaler.transform(X[val_idx])
         cv_model = GradientBoostingClassifier(
             n_estimators=300, max_depth=4, learning_rate=0.05,
             subsample=0.8, min_samples_split=20, min_samples_leaf=10,
             max_features="sqrt", random_state=42,
         )
-        cv_model.fit(X_scaled[train_idx], y[train_idx])
-        cv_pred = cv_model.predict(X_scaled[val_idx])
+        cv_model.fit(X_cv_train, y[train_idx])
+        cv_pred = cv_model.predict(X_cv_val)
         cv_scores.append(accuracy_score(y[val_idx], cv_pred))
 
     # --- Export lightweight JSON model ---
@@ -322,12 +334,13 @@ def train_aviator_model(df: pd.DataFrame) -> dict:
         "confidence_threshold": best_threshold,
     }
 
-    with open(AVIATOR_WEIGHTS_PATH, "w") as f:
-        json.dump(weights, f)
+    if persist:
+        with open(AVIATOR_WEIGHTS_PATH, "w") as f:
+            json.dump(weights, f)
 
-    # Reset cache
-    global _cached_weights
-    _cached_weights = None
+        # Reset cache so next load picks up new file
+        global _cached_weights
+        _cached_weights = None
 
     feat_imp = dict(zip(FEATURE_COLS, model.feature_importances_.tolist()))
 
@@ -348,6 +361,7 @@ def train_aviator_model(df: pd.DataFrame) -> dict:
         },
         "classification_report": report,
         "feature_importance": feat_imp,
+        **(({"weights": weights}) if not persist else {}),
     }
 
 
@@ -355,19 +369,24 @@ def train_aviator_model(df: pd.DataFrame) -> dict:
 # Prediction (lightweight inference)
 # ------------------------------------------------------------------
 
-def predict_next_round(df: pd.DataFrame) -> dict:
+def predict_next_round(df: pd.DataFrame, *, weights: Optional[dict] = None) -> dict:
     """Predict whether the next round will be >= 2x.
 
     Parameters
     ----------
     df : DataFrame
         Recent crash history (needs at least 50 rows).
+    weights : dict, optional
+        Pre-loaded model weights.  When *None* (default) the persisted
+        weights are loaded from disk.  Pass explicit weights to run
+        inference without touching the global model (used by simulation).
 
     Returns
     -------
     dict with prediction, confidence, and recommendation.
     """
-    weights = load_aviator_model()
+    if weights is None:
+        weights = load_aviator_model()
     if weights is None:
         raise ValueError("Aviator model not trained yet. Train the model first.")
 
